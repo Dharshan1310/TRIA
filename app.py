@@ -3,9 +3,10 @@ Transaction Risk Detection System
 A Flask-based application for analyzing customer transactions and detecting unusual activity patterns.
 """
 
-from flask import Flask, render_template_string, request, jsonify
+from flask import Flask, render_template_string, request, jsonify, send_file
 import csv
-from datetime import datetime
+import json
+from datetime import datetime, date
 from collections import Counter
 import io
 import os
@@ -19,6 +20,14 @@ load_dotenv()
 
 app = Flask(__name__)
 API_KEY = os.getenv('API_KEY', 'not-configured')
+DEFAULT_RULES = {
+    'large_transfer_multiplier': 2.5,
+    'odd_hour_end': 6,
+    'new_payee_count': 2,
+    'enabled_rules': ['large_transfer', 'new_payee', 'odd_hour', 'channel'],
+}
+RULES = DEFAULT_RULES.copy()
+RULES_UPDATED_AT = None
 
 # Minimalistic HTML Template
 HTML_TEMPLATE = """
@@ -61,6 +70,18 @@ HTML_TEMPLATE = """
         .rule-label { background: #fef3c7; padding: 6px 10px; border-radius: 4px; font-size: 12px; margin: 8px 0; display: inline-block; }
         .explanation { font-size: 13px; color: #4b5563; margin: 8px 0; line-height: 1.5; }
         .investigation { background: #dbeafe; padding: 10px; border-radius: 4px; font-size: 13px; color: #0c4a6e; margin-top: 10px; }
+        .baseline-panel { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 16px 0; }
+        .baseline-panel div { background: #ecfeff; border: 1px solid #a5f3fc; padding: 13px; border-radius: 6px; }
+        .baseline-panel span, .baseline-panel strong { display: block; }
+        .baseline-panel span { color: #155e75; font-size: 12px; margin-bottom: 7px; }
+        .baseline-panel strong { color: #164e63; font-size: 15px; }
+        .rule-grid, .filter-bar { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+        .rule-grid input, .filter-bar input, .filter-bar select { width: 100%; padding: 9px; border: 1px solid #d1d5db; border-radius: 6px; }
+        .rule-help, .history { font-size: 12px; color: #64748b; margin-top: 9px; }
+        .report-tools { display: flex; justify-content: space-between; gap: 12px; align-items: end; margin: 0 0 20px; }
+        .filter-bar { flex: 1; }
+        .history-item { padding: 8px 0; border-bottom: 1px solid #e5e7eb; }
+        @media (max-width: 650px) { .baseline-panel, .rule-grid, .filter-bar { grid-template-columns: 1fr; } .report-tools { align-items: stretch; flex-direction: column; } }
         .report-heading { display: flex; justify-content: space-between; gap: 24px; align-items: center; margin-bottom: 22px; }
         .report-heading h2 { font-size: 26px; color: #12304a; margin-top: 4px; }
         .eyebrow { color: #0f766e; font-size: 11px; font-weight: 800; letter-spacing: 1.4px; }
@@ -109,6 +130,17 @@ HTML_TEMPLATE = """
                 <strong>Accepted:</strong> CSV, PDF, or plain text with date, description, payee, amount, and channel columns.
             </div>
 
+            <div class="form-group">
+                <label>Rule modification</label>
+                <div class="rule-grid">
+                    <div><label><input id="rule-large" type="checkbox" checked> Large transfer rule</label><input id="large-rule" type="number" min="1.1" max="10" step="0.1" value="2.5"></div>
+                    <div><label><input id="rule-payee" type="checkbox" checked> New payee rule</label><input id="payee-rule" type="number" min="2" max="10" step="1" value="2"></div>
+                    <div><label><input id="rule-odd" type="checkbox" checked> Odd-hour rule</label><input id="odd-rule" type="number" min="1" max="12" step="1" value="6"></div>
+                </div>
+                <div class="rule-grid"><div><label><input id="rule-channel" type="checkbox" checked> Unusual channel rule</label><input value="Uses the customer’s most common channel" disabled></div></div>
+                <div class="rule-help">Enable or disable complete fraud rules and edit their criteria. Rules can be changed once per day.</div>
+            </div>
+
             <div class="button-group">
                 <button class="btn-primary" onclick="analyzeTransactions()">Analyze</button>
                 <button class="btn-secondary" onclick="clearForm()">Clear</button>
@@ -122,13 +154,52 @@ HTML_TEMPLATE = """
             <div class="card">
                 <div class="back-btn">
                     <button class="btn-secondary" onclick="backToForm()">← Back</button>
+                    <button class="btn-primary" onclick="newInvestigation()">+ New investigation</button>
+                </div>
+                <div class="report-tools">
+                    <div class="filter-bar">
+                        <input id="filter-date" type="date" onchange="filterReport()" aria-label="Filter by date">
+                        <input id="filter-amount" type="number" min="0" placeholder="Minimum amount" oninput="filterReport()" aria-label="Filter by amount">
+                        <select id="filter-rule" onchange="filterReport()"><option value="">All risk rules</option></select>
+                    </div>
+                    <button class="btn-secondary" onclick="rerunWithRules()">Rerun with new rules</button>
+                    <button class="btn-secondary" onclick="exportReport()">Export PDF</button>
                 </div>
                 <div id="report-content"></div>
+                <div class="history"><strong>Investigation history</strong><div id="history-list"></div></div>
             </div>
         </div>
     </div>
 
     <script>
+        let currentCsvData = '';
+        let currentRules = {};
+        let investigations = [];
+
+        function readRules() {
+            return {
+                large_transfer_multiplier: Number(document.getElementById('large-rule').value),
+                odd_hour_end: Number(document.getElementById('odd-rule').value),
+                new_payee_count: Number(document.getElementById('payee-rule').value),
+                enabled_rules: ['large', 'payee', 'odd', 'channel'].filter(rule => document.getElementById('rule-' + rule).checked).map(rule => ({large: 'large_transfer', payee: 'new_payee', odd: 'odd_hour', channel: 'channel'})[rule])
+            };
+        }
+
+        function showReport(data) {
+            currentRules = data.rules || readRules();
+            if (!currentCsvData && data.transactions) {
+                currentCsvData = 'date,description,payee,amount,channel\\n' + data.transactions.map(txn => [txn.date, txn.description, txn.payee, txn.amount, txn.channel].map(value => `"${String(value).replace(/"/g, '""')}"`).join(',')).join('\\n');
+            }
+            investigations.push({time: data.generated_at, report: data.report, issues: data.issues || []});
+            document.getElementById('report-content').innerHTML = data.report;
+            document.getElementById('input-section').classList.add('hidden');
+            document.getElementById('report-section').classList.remove('hidden');
+            const ruleSelect = document.getElementById('filter-rule');
+            ruleSelect.innerHTML = '<option value="">All risk rules</option>' + (data.issues || []).map(issue => `<option value="${issue.rule}">${issue.rule}</option>`).join('');
+            renderHistory();
+            window.scrollTo(0, 0);
+        }
+
         function analyzeTransactions() {
             const pastedText = document.getElementById('csv-text').value.trim();
             const selectedFile = document.getElementById('csv-file').files[0];
@@ -145,6 +216,8 @@ HTML_TEMPLATE = """
             const formData = new FormData();
             if (selectedFile) formData.append('file', selectedFile);
             if (pastedText) formData.append('text_data', pastedText);
+            formData.append('rules', JSON.stringify(readRules()));
+            currentCsvData = pastedText;
 
             fetch('/analyze', {
                 method: 'POST',
@@ -157,10 +230,7 @@ HTML_TEMPLATE = """
                     errorDiv.textContent = data.error;
                     errorDiv.classList.add('show');
                 } else {
-                    document.getElementById('report-content').innerHTML = data.report;
-                    document.getElementById('input-section').classList.add('hidden');
-                    document.getElementById('report-section').classList.remove('hidden');
-                    window.scrollTo(0, 0);
+                    showReport(data);
                 }
             })
             .catch(err => {
@@ -168,6 +238,49 @@ HTML_TEMPLATE = """
                 errorDiv.textContent = 'We could not complete the analysis. Please check the input and try again.';
                 errorDiv.classList.add('show');
             });
+        }
+
+        function filterReport() {
+            const date = document.getElementById('filter-date').value;
+            const minimum = Number(document.getElementById('filter-amount').value || 0);
+            const rule = document.getElementById('filter-rule').value;
+            document.querySelectorAll('#report-content .issue').forEach(issue => {
+                const matchesRule = !rule || issue.querySelector('h3').textContent === rule;
+                const rows = [...issue.querySelectorAll('tbody tr, tr')].slice(1);
+                const matchesTransaction = !date && !minimum || rows.some(row => {
+                    const cells = row.querySelectorAll('td');
+                    return cells.length && (!date || cells[0].textContent.startsWith(date)) && (!minimum || Number(cells[2].textContent.replace(/[^0-9.-]/g, '')) >= minimum);
+                });
+                issue.style.display = matchesRule && matchesTransaction ? '' : 'none';
+            });
+        }
+
+        function exportReport() {
+            const form = new FormData();
+            form.append('text_data', currentCsvData);
+            form.append('rules', JSON.stringify(currentRules));
+            fetch('/export-pdf', {method: 'POST', body: form}).then(response => response.blob()).then(blob => {
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a'); link.href = url; link.download = 'tria-risk-report.pdf'; link.click(); URL.revokeObjectURL(url);
+            });
+        }
+
+        function newInvestigation() {
+            document.getElementById('report-section').classList.add('hidden');
+            document.getElementById('input-section').classList.remove('hidden');
+            clearForm();
+        }
+
+        function rerunWithRules() {
+            fetch('/rerun', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({csv_data: currentCsvData, rules: readRules()})})
+                .then(r => r.json()).then(data => data.error ? alert(data.error) : showReport(data));
+        }
+
+        function renderHistory() {
+            const stored = JSON.parse(localStorage.getItem('tria-history') || '[]');
+            const all = [...stored, ...investigations.map(item => ({time: item.time}))].slice(-8).reverse();
+            localStorage.setItem('tria-history', JSON.stringify(all));
+            document.getElementById('history-list').innerHTML = all.map(item => `<div class="history-item">${item.time || 'Unknown time'}</div>`).join('');
         }
 
         function clearForm() {
@@ -199,9 +312,10 @@ class TransactionAnalyzer:
     - Unusual transaction channels
     """
     
-    def __init__(self, transactions):
+    def __init__(self, transactions, rules=None):
         """Initialize analyzer with transaction data."""
         self.transactions = transactions
+        self.rules = {**DEFAULT_RULES, **(rules or {})}
         self.issues = []
         self.stats = self._calculate_stats()
     
@@ -235,7 +349,7 @@ class TransactionAnalyzer:
             
         avg = self.stats['avg_amount']
         median = self.stats['median_amount']
-        threshold = max(avg * 2.5, median * 3)
+        threshold = max(avg * self.rules['large_transfer_multiplier'], median * 3)
         
         flagged = [t for t in self.transactions if t['amount'] > threshold]
         
@@ -257,7 +371,7 @@ class TransactionAnalyzer:
         payee_freq = self.stats['payee_frequency']
         one_time_payees = {payee: count for payee, count in payee_freq.items() if count <= 1}
         
-        if len(one_time_payees) >= 2:
+        if len(one_time_payees) >= self.rules['new_payee_count']:
             flagged = [t for t in self.transactions if t['payee'] in one_time_payees]
             if flagged:
                 self.issues.append({
@@ -273,7 +387,7 @@ class TransactionAnalyzer:
         if not self.transactions:
             return
             
-        odd_hours = [t for t in self.transactions if t['hour'] < 6]
+        odd_hours = [t for t in self.transactions if t['hour'] < self.rules['odd_hour_end']]
         
         if odd_hours:
             common_hours = [h for h, count in self.stats['common_hours']]
@@ -310,10 +424,14 @@ class TransactionAnalyzer:
     
     def analyze(self):
         """Run all risk detection rules and return issues found."""
-        self.detect_large_transfers()
-        self.detect_burst_to_new_payees()
-        self.detect_odd_hour_transactions()
-        self.detect_unusual_channels()
+        if 'large_transfer' in self.rules['enabled_rules']:
+            self.detect_large_transfers()
+        if 'new_payee' in self.rules['enabled_rules']:
+            self.detect_burst_to_new_payees()
+        if 'odd_hour' in self.rules['enabled_rules']:
+            self.detect_odd_hour_transactions()
+        if 'channel' in self.rules['enabled_rules']:
+            self.detect_unusual_channels()
         return self.issues
 
 
@@ -425,6 +543,9 @@ def generate_report(issues, transactions):
     rules = ', '.join(issue['rule'] for issue in issues) or 'None'
     status_class = 'safe' if not issues else 'alert'
     status_text = 'No rules were broken. Activity appears routine.' if not issues else 'Some activity needs attention. Please review the rules below.'
+    normal_average = (sum(txn['amount'] for txn in transactions) / len(transactions)) if transactions else 0
+    normal_channel = Counter(txn['channel'] for txn in transactions).most_common(1)
+    normal_channel = normal_channel[0][0] if normal_channel else 'n/a'
 
     html = f'''
     <div class="report-heading">
@@ -439,6 +560,7 @@ def generate_report(issues, transactions):
         <div><span>Total amount</span><strong>${total_amount:,.2f}</strong></div>
         <div><span>Rules broken</span><strong>{len(issues)}</strong></div>
     </div>
+    <div class="baseline-panel"><div><span>Normal activity baseline</span><strong>Average ${normal_average:,.2f}</strong></div><div><span>Typical channel</span><strong>{escape(normal_channel)}</strong></div><div><span>Comparison</span><strong>Flagged items are shown against this baseline</strong></div></div>
     <div class="rules-broken"><strong>Rules broken:</strong> {escape(rules)}</div>
     '''
     
@@ -498,14 +620,14 @@ def analyze():
                 return jsonify({'error': 'Please provide a CSV, PDF, or text file, or paste transaction data.'}), 400
             transactions = parse_text(text_data)
         
-        # Run analysis
-        analyzer = TransactionAnalyzer(transactions)
-        issues = analyzer.analyze()
+        rules = request.form.get('rules')
+        rules = parse_rules(rules) if rules else RULES
+        issues = TransactionAnalyzer(transactions, rules).analyze()
         
         # Generate report
         report_html = generate_report(issues, transactions)
         
-        return jsonify({'report': report_html}), 200
+        return jsonify({'report': report_html, 'transactions': transactions, 'issues': issues, 'generated_at': datetime.now().isoformat(timespec='seconds'), 'rules': rules}), 200
     
     except ValueError as e:
         # CSV parsing or validation error
@@ -514,6 +636,93 @@ def analyze():
         # Unexpected server error
         app.logger.error(f"Analysis error: {str(e)}", exc_info=True)
         return jsonify({'error': 'An unexpected error occurred during analysis'}), 500
+
+
+def parse_rules(raw_rules):
+    """Validate the small set of user-editable rules."""
+    if isinstance(raw_rules, dict):
+        values = raw_rules
+    else:
+        values = json.loads(raw_rules or '{}')
+    rules = DEFAULT_RULES.copy()
+    rules['large_transfer_multiplier'] = min(10, max(1.1, float(values.get('large_transfer_multiplier', rules['large_transfer_multiplier']))))
+    rules['odd_hour_end'] = min(12, max(1, int(values.get('odd_hour_end', rules['odd_hour_end']))))
+    rules['new_payee_count'] = min(10, max(2, int(values.get('new_payee_count', rules['new_payee_count']))))
+    enabled_rules = values.get('enabled_rules', rules['enabled_rules'])
+    rules['enabled_rules'] = [rule for rule in enabled_rules if rule in {'large_transfer', 'new_payee', 'odd_hour', 'channel'}]
+    return rules
+
+
+def parse_request_transactions():
+    """Read the same multipart or JSON input accepted by /analyze."""
+    uploaded_file = request.files.get('file')
+    if uploaded_file and uploaded_file.filename:
+        if uploaded_file.filename.lower().endswith('.pdf'):
+            return parse_pdf(uploaded_file)
+        return parse_text(uploaded_file.read().decode('utf-8-sig'))
+    data = request.get_json(silent=True) or {}
+    text_data = request.form.get('text_data', '') or data.get('csv_data', '')
+    if not text_data.strip():
+        raise ValueError('Please provide transaction data.')
+    return parse_text(text_data)
+
+
+def build_pdf(transactions, issues):
+    """Create a dependency-free, readable PDF summary for export."""
+    lines = ['TRIA TRANSACTION RISK REPORT', f'Generated: {datetime.now().isoformat(timespec="seconds")}',
+             f'Transactions reviewed: {len(transactions)}', f'Flagged transactions: {len({id(transaction) for issue in issues for transaction in issue["transactions"]})}',
+             f'Total risk: {calculate_risk_percentage(issues)}%', '']
+    for issue in issues:
+        lines.append(f'{issue["severity"].upper()}: {issue["rule"]}')
+        lines.append(issue['explanation'])
+    if not issues:
+        lines.append('No rules were broken. Activity appears routine.')
+    lines = [line[:115] for line in lines]
+    stream = 'BT /F1 10 Tf 50 760 Td ' + ' '.join(f'({line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")}) Tj 0 -16 Td' for line in lines) + ' ET'
+    objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>', '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>', f'<< /Length {len(stream.encode("latin-1"))} >>\nstream\n{stream}\nendstream']
+    pdf = b'%PDF-1.4\n'
+    offsets = [0]
+    for index, obj in enumerate(objects, 1):
+        offsets.append(len(pdf))
+        pdf += f'{index} 0 obj\n{obj}\nendobj\n'.encode('latin-1')
+    xref = len(pdf)
+    pdf += f'xref\n0 {len(objects) + 1}\n0000000000 65535 f \n'.encode('latin-1')
+    pdf += ''.join(f'{offset:010d} 00000 n \n' for offset in offsets[1:]).encode('latin-1')
+    pdf += f'trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF'.encode('latin-1')
+    return io.BytesIO(pdf)
+
+
+@app.route('/rerun', methods=['POST'])
+def rerun():
+    """Re-analyze the current case with rules changed at most once per day."""
+    global RULES, RULES_UPDATED_AT
+    try:
+        data = request.get_json(silent=True) or {}
+        requested_rules = parse_rules(data.get('rules', {}))
+        today = date.today().isoformat()
+        if RULES_UPDATED_AT and RULES_UPDATED_AT != today:
+            RULES_UPDATED_AT = None
+        if RULES_UPDATED_AT == today and requested_rules != RULES:
+            return jsonify({'error': 'Rules can be changed once per day. You can still rerun with today\'s rules.'}), 429
+        if requested_rules != RULES:
+            RULES = requested_rules
+            RULES_UPDATED_AT = today
+        transactions = parse_text(data.get('csv_data', ''))
+        issues = TransactionAnalyzer(transactions, RULES).analyze()
+        return jsonify({'report': generate_report(issues, transactions), 'transactions': transactions, 'issues': issues, 'generated_at': datetime.now().isoformat(timespec='seconds'), 'rules': RULES})
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        return jsonify({'error': str(exc)}), 400
+
+
+@app.route('/export-pdf', methods=['POST'])
+def export_pdf():
+    try:
+        transactions = parse_request_transactions()
+        rules = parse_rules(request.form.get('rules', '{}'))
+        issues = TransactionAnalyzer(transactions, rules).analyze()
+        return send_file(build_pdf(transactions, issues), mimetype='application/pdf', as_attachment=True, download_name='tria-risk-report.pdf')
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
 
 
 @app.errorhandler(404)
