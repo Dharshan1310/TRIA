@@ -3,7 +3,7 @@ Transaction Risk Detection System
 A Flask-based application for analyzing customer transactions and detecting unusual activity patterns.
 """
 
-from flask import Flask, render_template_string, request, jsonify, send_file
+from flask import Flask, render_template_string, request, jsonify, send_file, session, redirect, url_for
 import csv
 import json
 from datetime import datetime, date
@@ -14,11 +14,16 @@ import re
 from html import escape
 from pypdf import PdfReader
 from dotenv import load_dotenv
+from werkzeug.security import check_password_hash, generate_password_hash
 
 # Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
+app.secret_key = os.getenv('FLASK_SECRET_KEY', 'tria-development-secret-change-me')
+EMPLOYEE_USERNAME = os.getenv('EMPLOYEE_USERNAME', 'employee')
+EMPLOYEE_PASSWORD = os.getenv('EMPLOYEE_PASSWORD', 'tria2024')
+EMPLOYEES_FILE = os.path.join(os.path.dirname(__file__), 'employees.json')
 API_KEY = os.getenv('API_KEY', 'not-configured')
 DEFAULT_RULES = {
     'large_transfer_multiplier': 2.5,
@@ -29,6 +34,72 @@ DEFAULT_RULES = {
 RULES = DEFAULT_RULES.copy()
 RULES_UPDATED_AT = None
 
+
+def load_employee_accounts():
+    """Load registered employees, falling back to the configured initial account."""
+    try:
+        with open(EMPLOYEES_FILE, 'r', encoding='utf-8') as employee_file:
+            accounts = json.load(employee_file)
+            return accounts if isinstance(accounts, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {EMPLOYEE_USERNAME: generate_password_hash(EMPLOYEE_PASSWORD)}
+
+
+def save_employee_accounts(accounts):
+    """Persist only password hashes, never plaintext passwords."""
+    with open(EMPLOYEES_FILE, 'w', encoding='utf-8') as employee_file:
+        json.dump(accounts, employee_file, indent=2)
+
+LOGIN_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>TRIA | Employee access</title>
+    <style>
+        :root { color-scheme: dark; font-family: Georgia, 'Times New Roman', serif; background: #111916; color: #edf4ef; }
+        * { box-sizing: border-box; }
+        body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(circle at 15% 15%, #20453c, transparent 36%), linear-gradient(135deg, #111916, #1c2c29); }
+        main { width: min(440px, 100%); padding: 42px; border: 1px solid #48695e; background: rgba(20, 33, 29, .92); box-shadow: 0 24px 70px rgba(0,0,0,.3); }
+        .mark { color: #b9d66f; font: 700 12px Arial, sans-serif; letter-spacing: .2em; }
+        h1 { font-size: 40px; line-height: 1; margin: 28px 0 10px; }
+        p { color: #b8c8c0; font: 14px Arial, sans-serif; line-height: 1.6; }
+        label { display: block; margin: 24px 0 8px; color: #dce9df; font: 700 12px Arial, sans-serif; text-transform: uppercase; letter-spacing: .08em; }
+        input { width: 100%; padding: 14px; color: #f4fbf5; background: #0d1513; border: 1px solid #527267; font: 15px Arial, sans-serif; }
+        input:focus { outline: 2px solid #b9d66f; outline-offset: 2px; }
+        button { width: 100%; margin-top: 28px; padding: 15px; border: 0; background: #b9d66f; color: #142019; font: 700 13px Arial, sans-serif; letter-spacing: .08em; text-transform: uppercase; cursor: pointer; transition: transform .2s, background .2s; }
+        button:hover { transform: translateY(-2px); background: #d5ed8e; }
+        .error { margin-top: 18px; padding: 12px; border-left: 3px solid #f0a078; background: #3b2521; color: #ffc4a9; font: 13px Arial, sans-serif; }
+        .success { margin-top: 18px; padding: 12px; border-left: 3px solid #b9d66f; background: #263d2c; color: #d5ed8e; font: 13px Arial, sans-serif; }
+        .hint { margin-top: 24px; font-size: 12px; color: #829a8f; }
+    </style>
+</head>
+<body><main>
+    <div class="mark">TRIA / OPERATIONS</div>
+    <h1>Welcome back.</h1>
+    <p>Sign in to review transaction activity and move the next investigation forward.</p>
+    <form method="post">
+        <label for="username">Employee ID</label><input id="username" name="username" autocomplete="username" required autofocus>
+        <label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required>
+        <button type="submit">Enter workspace</button>
+    </form>
+    {% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}
+    {% if created %}<div class="success" role="status">Account created. You can sign in now.</div>{% endif %}
+    <p class="hint"><a href="{{ url_for('register') }}">Create a new employee account</a></p>
+    <p class="hint">Protected employee workspace · Authorized access only</p>
+</main></body>
+</html>
+"""
+
+REGISTER_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>TRIA | Create account</title>
+<style>
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: linear-gradient(135deg, #111916, #1c2c29); color: #edf4ef; font-family: Arial, sans-serif; }
+main { width: min(440px, 100%); padding: 42px; border: 1px solid #48695e; background: #14211d; box-shadow: 0 24px 70px rgba(0,0,0,.3); } h1 { font: 700 36px Georgia, serif; margin: 22px 0 8px; } p { color: #b8c8c0; line-height: 1.5; } label { display: block; margin: 20px 0 8px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; } input { width: 100%; padding: 14px; box-sizing: border-box; background: #0d1513; border: 1px solid #527267; color: white; } button { width: 100%; margin-top: 26px; padding: 15px; border: 0; background: #b9d66f; color: #142019; font-weight: 700; cursor: pointer; } a { color: #b9d66f; } .error { padding: 12px; margin-top: 18px; border-left: 3px solid #f0a078; background: #3b2521; color: #ffc4a9; }
+</style></head><body><main><div style="color:#b9d66f;font-size:12px;font-weight:700;letter-spacing:.2em">TRIA / OPERATIONS</div><h1>Create employee account.</h1><p>Set up a secure ID for the transaction intelligence workspace.</p><form method="post"><label for="username">Employee ID</label><input id="username" name="username" minlength="3" maxlength="40" required autofocus><label for="password">Password</label><input id="password" name="password" type="password" minlength="8" required><label for="confirm_password">Confirm password</label><input id="confirm_password" name="confirm_password" type="password" minlength="8" required><button type="submit">Create account</button></form>{% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}<p><a href="{{ url_for('login') }}">Back to employee login</a></p></main></body></html>
+"""
+
 # Minimalistic HTML Template
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -36,7 +107,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Risk Detector</title>
+    <title>TRIA | Operations overview</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f9fafb; color: #1f2937; }
@@ -106,10 +177,69 @@ HTML_TEMPLATE = """
         .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid #e5e7eb; border-top-color: #3b82f6; border-radius: 50%; animation: spin 0.8s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
         @media (max-width: 650px) { .report-heading { align-items: stretch; flex-direction: column; } .risk-score { min-width: 0; } .key-info { grid-template-columns: repeat(2, 1fr); } .card { padding: 20px; } }
+        :root { --ink: #17231f; --muted: #687872; --paper: #f5f7f2; --panel: #ffffff; --line: #dce4dc; --green: #286b59; --lime: #b8d96a; --coral: #e67d5f; }
+        body { font-family: Arial, sans-serif; background: var(--paper); color: var(--ink); transition: background .25s, color .25s; }
+        .app-shell { display: flex; min-height: 100vh; }
+        .sidebar { width: 248px; flex: 0 0 248px; padding: 28px 18px; background: #18352e; color: #dcebe2; display: flex; flex-direction: column; }
+        .brand { padding: 0 14px 30px; border-bottom: 1px solid #3d6155; }
+        .brand strong { display: block; font: 800 28px Georgia, serif; letter-spacing: .08em; color: #f2f7eb; }
+        .brand span { display: block; margin-top: 7px; font-size: 10px; letter-spacing: .18em; color: var(--lime); }
+        .menu-label { margin: 28px 14px 10px; font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: #91afa2; }
+        .nav-btn { width: 100%; padding: 12px 14px; border: 0; border-left: 3px solid transparent; text-align: left; color: #bdd0c6; background: transparent; font-weight: 700; cursor: pointer; transition: background .2s, color .2s, border .2s; }
+        .nav-btn:hover, .nav-btn.active { background: #285247; border-left-color: var(--lime); color: white; }
+        .sidebar-footer { margin-top: auto; padding: 16px 14px 0; border-top: 1px solid #3d6155; font-size: 12px; color: #9ab4a8; }
+        .sidebar-footer strong { display: block; color: #edf5e9; margin-bottom: 12px; }
+        .sidebar-footer form { margin: 0; }
+        .logout { padding: 0; color: #b9d66f; background: none; font-size: 12px; }
+        .container { width: min(1180px, 100%); max-width: none; margin: 0; padding: 0 44px 60px; }
+        header { display: flex; justify-content: space-between; align-items: end; padding: 42px 0 26px; margin-bottom: 30px; border-bottom: 1px solid var(--line); }
+        header h1 { color: var(--ink); font: 800 38px Georgia, serif; letter-spacing: -.02em; }
+        header p { color: var(--muted); }
+        .top-actions { display: flex; gap: 8px; align-items: center; }
+        .icon-btn { width: 38px; height: 38px; padding: 0; background: var(--panel); border: 1px solid var(--line); color: var(--ink); }
+        .icon-btn:hover { background: #e7efe3; }
+        .hero-strip { display: grid; grid-template-columns: 1fr 1.25fr; gap: 16px; margin-bottom: 18px; }
+        .welcome-panel, .next-panel { padding: 25px; border: 1px solid var(--line); background: var(--panel); box-shadow: 0 12px 28px rgba(31, 67, 53, .07); }
+        .welcome-panel { background: #dcebd6; }
+        .welcome-panel h2, .next-panel h2 { margin: 7px 0 8px; font: 700 25px Georgia, serif; }
+        .welcome-panel p, .next-panel p { margin: 0; line-height: 1.5; }
+        .next-panel { display: flex; align-items: center; gap: 18px; }
+        .next-number { display: grid; place-items: center; flex: 0 0 48px; height: 48px; border-radius: 50%; background: var(--coral); color: white; font: 800 21px Georgia, serif; }
+        .next-panel .eyebrow { color: var(--green); }
+        .card { border: 1px solid var(--line); border-radius: 2px; background: var(--panel); box-shadow: 0 12px 28px rgba(31, 67, 53, .07); }
+        .btn-primary { background: var(--green); }
+        .btn-primary:hover { background: #1e5546; }
+        .btn-secondary { background: #edf2eb; color: var(--ink); }
+        textarea, input[type=file], .rule-grid input, .filter-bar input, .filter-bar select { background: var(--panel); color: var(--ink); border-color: var(--line); }
+        .eyebrow { color: var(--green); }
+        .mobile-menu { display: none; }
+        @media (max-width: 820px) { .sidebar { width: 210px; flex-basis: 210px; } .container { padding: 0 24px 40px; } .hero-strip { grid-template-columns: 1fr; } }
+        @media (max-width: 650px) { .app-shell { display: block; } .sidebar { display: none; position: fixed; z-index: 5; inset: 0 auto 0 0; width: 250px; } .sidebar.open { display: flex; } .mobile-menu { display: inline-block; } .container { padding: 0 16px 36px; } header { align-items: start; padding: 24px 0 20px; } header h1 { font-size: 30px; } .top-actions { flex-shrink: 0; } }
+        body.dark { --ink: #e9f2e9; --muted: #a2b5aa; --paper: #101916; --panel: #192620; --line: #34483f; --green: #78b79f; --lime: #c8e47a; }
+        body.dark .sidebar { background: #0a1210; } body.dark .welcome-panel { background: #203a31; } body.dark .btn-secondary, body.dark .icon-btn { background: #22332d; color: var(--ink); }
     </style>
 </head>
 <body>
-    <div class="container">
+    <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+        <div class="brand"><strong>TRIA</strong><span>TRANSACTION INTELLIGENCE</span></div>
+        <div class="menu-label">Workspace</div>
+        <button class="nav-btn active" onclick="showWorkspace('input-section', this)">Overview</button>
+        <button class="nav-btn" onclick="focusInput('csv-file', this)">New investigation</button>
+        <button class="nav-btn" onclick="showWorkspace('history-anchor', this)">Investigation history</button>
+        <div class="menu-label">System</div>
+        <button class="nav-btn" onclick="toggleTheme()">Appearance <span id="theme-label">Light</span></button>
+        <div class="sidebar-footer"><strong>{{ session.get('employee_username', 'Employee') }}</strong><span>Risk operations desk</span><form method="post" action="{{ url_for('logout') }}"><button class="logout" type="submit">Sign out</button></form></div>
+    </aside>
+    <main class="container">
+        <header>
+            <div><button class="icon-btn mobile-menu" onclick="toggleMenu()" aria-label="Open menu">☰</button><h1>Operations overview</h1><p>Review activity, surface risk, and decide what happens next.</p></div>
+            <div class="top-actions"><button class="icon-btn" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode">◐</button></div>
+        </header>
+        <div class="hero-strip">
+            <section class="welcome-panel"><span class="eyebrow">TODAY'S DESK</span><h2>Clarity before action.</h2><p>Use the review engine to turn raw transaction activity into a defensible next step.</p></section>
+            <section class="next-panel"><div class="next-number">1</div><div><span class="eyebrow">RECOMMENDED NEXT ACTION</span><h2>Start a new investigation</h2><p>Upload a transaction file or paste activity to establish a customer baseline.</p></div></section>
+        </div>
         <header>
             <h1>Risk Detector</h1>
             <p>Analyze transactions for unusual patterns</p>
@@ -166,15 +296,53 @@ HTML_TEMPLATE = """
                     <button class="btn-secondary" onclick="exportReport()">Export PDF</button>
                 </div>
                 <div id="report-content"></div>
-                <div class="history"><strong>Investigation history</strong><div id="history-list"></div></div>
+                <div class="history" id="history-anchor"><strong>Investigation history</strong><div id="history-list"></div></div>
             </div>
         </div>
-    </div>
+    </main></div>
 
     <script>
         let currentCsvData = '';
         let currentRules = {};
         let investigations = [];
+
+        function toggleTheme() {
+            document.body.classList.toggle('dark');
+            const isDark = document.body.classList.contains('dark');
+            localStorage.setItem('tria-theme', isDark ? 'dark' : 'light');
+            document.getElementById('theme-label').textContent = isDark ? 'Dark' : 'Light';
+        }
+
+        function toggleMenu() {
+            document.getElementById('sidebar').classList.toggle('open');
+        }
+
+        function showWorkspace(sectionId, button) {
+            if (sectionId === 'history-anchor' && document.getElementById('report-section').classList.contains('hidden')) {
+                showError('Complete an investigation first to view its history.');
+                return;
+            }
+            document.querySelectorAll('.nav-btn').forEach(item => item.classList.remove('active'));
+            button.classList.add('active');
+            document.getElementById(sectionId).scrollIntoView({behavior: 'smooth', block: 'start'});
+            toggleMenu();
+        }
+
+        function focusInput(inputId, button) {
+            showWorkspace('input-section', button);
+            document.getElementById(inputId).focus();
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error-msg');
+            errorDiv.textContent = message;
+            errorDiv.classList.add('show');
+            errorDiv.scrollIntoView({behavior: 'smooth', block: 'center'});
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            if (localStorage.getItem('tria-theme') === 'dark') toggleTheme();
+        });
 
         function readRules() {
             return {
@@ -207,8 +375,7 @@ HTML_TEMPLATE = """
             errorDiv.classList.remove('show');
 
             if (!pastedText && !selectedFile) {
-                errorDiv.textContent = 'Please upload a CSV, PDF, or text file, or paste transaction data.';
-                errorDiv.classList.add('show');
+                showError('Please upload a CSV, PDF, or text file, or paste transaction data.');
                 return;
             }
 
@@ -227,16 +394,14 @@ HTML_TEMPLATE = """
             .then(data => {
                 document.getElementById('loading').style.display = 'none';
                 if (data.error) {
-                    errorDiv.textContent = data.error;
-                    errorDiv.classList.add('show');
+                    showError(data.error);
                 } else {
                     showReport(data);
                 }
             })
             .catch(err => {
                 document.getElementById('loading').style.display = 'none';
-                errorDiv.textContent = 'We could not complete the analysis. Please check the input and try again.';
-                errorDiv.classList.add('show');
+                showError('We could not complete the analysis. Please check the input and try again.');
             });
         }
 
@@ -594,7 +759,65 @@ def generate_report(issues, transactions):
 @app.route('/')
 def index():
     """Serve the main application page."""
+    if not session.get('employee_authenticated'):
+        return redirect(url_for('login'))
     return render_template_string(HTML_TEMPLATE)
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Authenticate an employee before opening the investigation workspace."""
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+        accounts = load_employee_accounts()
+        valid_password = username in accounts and check_password_hash(accounts[username], password)
+        if valid_password or (username == EMPLOYEE_USERNAME and password == EMPLOYEE_PASSWORD):
+            session['employee_authenticated'] = True
+            session['employee_username'] = username
+            return redirect(url_for('index'))
+        return render_template_string(LOGIN_TEMPLATE, error='The employee ID or password is incorrect.', created=False), 401
+    return render_template_string(LOGIN_TEMPLATE, error=None, created=request.args.get('created') == '1')
+
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    """Create a persistent employee account with a hashed password."""
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+        confirmation = request.form.get('confirm_password', '')
+        if not re.fullmatch(r'[A-Za-z0-9._-]{3,40}', username):
+            error = 'Employee ID must be 3-40 characters and use letters, numbers, dots, underscores, or hyphens.'
+        elif len(password) < 8:
+            error = 'Password must be at least 8 characters.'
+        elif password != confirmation:
+            error = 'Passwords do not match.'
+        else:
+            accounts = load_employee_accounts()
+            if username in accounts or username == EMPLOYEE_USERNAME:
+                error = 'That employee ID is already registered.'
+            else:
+                accounts[username] = generate_password_hash(password)
+                save_employee_accounts(accounts)
+                return redirect(url_for('login', created='1'))
+        return render_template_string(REGISTER_TEMPLATE, error=error), 400
+    return render_template_string(REGISTER_TEMPLATE, error=None)
+
+
+@app.route('/logout', methods=['POST'])
+def logout():
+    """End the employee session."""
+    session.clear()
+    return redirect(url_for('login'))
+
+
+@app.before_request
+def require_employee_for_api():
+    """Keep direct analysis and export calls inside the employee session."""
+    protected_api_paths = {'/analyze', '/rerun', '/export-pdf'}
+    if request.path in protected_api_paths and not session.get('employee_authenticated'):
+        return jsonify({'error': 'Employee login required.'}), 401
 
 
 @app.route('/analyze', methods=['POST'])

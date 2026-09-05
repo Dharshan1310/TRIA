@@ -1,6 +1,9 @@
 """
 Quick functional tests for the transaction analysis system.
 """
+import os
+import tempfile
+import app as app_module
 from app import parse_csv, parse_text, TransactionAnalyzer, calculate_risk_percentage, generate_report, app
 
 # Test CSV data
@@ -74,8 +77,33 @@ def run_tests():
         assert calculate_risk_percentage([{'severity': 'high'}] * 4) == 100
         print("✅ Text parsing and risk score checks passed")
 
-        print("\n[Test 7] Multipart Text Upload...")
+        print("\n[Test 7] Employee Authentication...")
         client = app.test_client()
+        response = client.get('/', follow_redirects=False)
+        assert response.status_code == 302 and response.headers['Location'].endswith('/login'), "Anonymous users should be sent to login"
+        response = client.post('/login', data={'username': 'employee', 'password': 'wrong'}, follow_redirects=False)
+        assert response.status_code == 401, "Invalid credentials should be rejected"
+        response = client.post('/login', data={'username': 'employee', 'password': 'tria2024'}, follow_redirects=False)
+        assert response.status_code == 302 and response.headers['Location'].endswith('/'), "Valid credentials should open workspace"
+        response = client.get('/')
+        assert b'Operations overview' in response.data and b'RECOMMENDED NEXT ACTION' in response.data, "Workspace shell should render"
+        print("✅ Employee login and protected workspace work")
+
+        print("\n[Test 8] Employee Registration...")
+        original_employee_file = app_module.EMPLOYEES_FILE
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            app_module.EMPLOYEES_FILE = os.path.join(temporary_directory, 'employees.json')
+            response = client.post('/register', data={'username': 'new.employee', 'password': 'securepass', 'confirm_password': 'different'})
+            assert response.status_code == 400 and b'Passwords do not match' in response.data, "Mismatched passwords should be rejected"
+            response = client.post('/register', data={'username': 'new.employee', 'password': 'securepass', 'confirm_password': 'securepass'})
+            assert response.status_code == 302 and response.headers['Location'].endswith('/login?created=1'), "Valid registration should redirect to login"
+            client.post('/logout')
+            response = client.post('/login', data={'username': 'new.employee', 'password': 'securepass'}, follow_redirects=False)
+            assert response.status_code == 302, "New employee should be able to log in"
+        app_module.EMPLOYEES_FILE = original_employee_file
+        print("✅ New employee registration and login work")
+
+        print("\n[Test 9] Multipart Text Upload...")
         response = client.post('/analyze', data={'text_data': test_csv}, content_type='multipart/form-data')
         assert response.status_code == 200, f"Expected 200, got {response.status_code}"
         assert response.get_json()['report'], "Multipart report should not be empty"

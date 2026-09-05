@@ -14,6 +14,14 @@ python app.py
 
 Then visit: http://localhost:8000
 
+EMPLOYEE ACCESS:
+================
+The workspace requires an employee login. The development defaults are:
+Employee ID: employee
+Password: tria2024
+
+Set `EMPLOYEE_USERNAME`, `EMPLOYEE_PASSWORD`, and `FLASK_SECRET_KEY` in `.env` before deployment.
+
 TESTING:
 ========
 python test_app.py
