@@ -530,13 +530,14 @@ class TransactionAnalyzer:
     
     def detect_burst_to_new_payees(self):
         """Flag sudden payments to newly added payees."""
-        if not self.transactions:
+        if len(self.transactions) < 10:
             return
             
         payee_freq = self.stats['payee_frequency']
         one_time_payees = {payee: count for payee, count in payee_freq.items() if count <= 1}
         
-        if len(one_time_payees) >= self.rules['new_payee_count']:
+        new_payee_ratio = len(one_time_payees) / len(self.transactions)
+        if len(one_time_payees) >= self.rules['new_payee_count'] and new_payee_ratio >= 0.3:
             flagged = [t for t in self.transactions if t['payee'] in one_time_payees]
             if flagged:
                 self.issues.append({
@@ -549,12 +550,13 @@ class TransactionAnalyzer:
     
     def detect_odd_hour_transactions(self):
         """Flag transactions during unusual hours (midnight to 6 AM)."""
-        if not self.transactions:
+        if len(self.transactions) < 10:
             return
             
-        odd_hours = [t for t in self.transactions if t['hour'] < self.rules['odd_hour_end']]
+        odd_hours = [t for t in self.transactions if t.get('has_time') and t['hour'] < self.rules['odd_hour_end']]
         
-        if odd_hours:
+        # A single late-night transaction is weak evidence; require repetition.
+        if len(odd_hours) >= 2 and len(odd_hours) / len(self.transactions) >= 0.1:
             common_hours = [h for h, count in self.stats['common_hours']]
             self.issues.append({
                 'rule': 'Odd-Hour Transactions',
@@ -576,9 +578,9 @@ class TransactionAnalyzer:
         most_common = max(common_channels.items(), key=lambda x: x[1])[0]
         flagged = [t for t in self.transactions if t['channel'] != most_common]
         
-        if flagged and len(self.transactions) > 0:
+        if flagged and len(self.transactions) >= 10:
             pct_different = (len(flagged) / len(self.transactions)) * 100
-            if pct_different > 20:
+            if len(flagged) >= 3 and pct_different >= 25:
                 self.issues.append({
                     'rule': 'Unusual Channel Usage',
                     'severity': 'low',
@@ -640,6 +642,7 @@ def parse_csv(csv_data):
                 'amount': amount,
                 'channel': row['channel'].strip(),
                 'hour': date_obj.hour,
+                'has_time': bool(re.search(r'[T ]\d{1,2}:\d{2}', date_value)),
                 'dow': date_obj.strftime('%A'),
             })
         

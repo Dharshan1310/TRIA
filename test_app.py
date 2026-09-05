@@ -19,6 +19,18 @@ test_csv = """date,description,payee,amount,channel
 2024-01-20,Deposit,Employer,5500.00,online
 2024-01-21,Payment,Regular Vendor,250.00,mobile"""
 
+routine_csv = """date,description,payee,amount,channel
+2024-02-01,Payment,Utility Co,120.00,online
+2024-02-02,Payment,Grocer,125.00,online
+2024-02-03,Payment,Utility Co,118.00,online
+2024-02-04,Payment,Grocer,122.00,online
+2024-02-05,Payment,Utility Co,121.00,online
+2024-02-06,Payment,Grocer,119.00,online
+2024-02-07,Payment,Utility Co,124.00,online
+2024-02-08,Payment,Grocer,123.00,online
+2024-02-09,Payment,Utility Co,117.00,online
+2024-02-10,Payment,Grocer,126.00,online"""
+
 def run_tests():
     """Run functional tests."""
     print("=" * 60)
@@ -77,7 +89,14 @@ def run_tests():
         assert calculate_risk_percentage([{'severity': 'high'}] * 4) == 100
         print("✅ Text parsing and risk score checks passed")
 
-        print("\n[Test 7] Employee Authentication...")
+        print("\n[Test 7] Routine File Precision...")
+        routine_transactions = parse_csv(routine_csv)
+        routine_issues = TransactionAnalyzer(routine_transactions).analyze()
+        assert routine_issues == [], f"Routine data should not trigger rules: {routine_issues}"
+        assert calculate_risk_percentage(routine_issues) == 0, "Routine data should have a 0% risk score"
+        print("✅ Routine activity produces zero findings and 0% risk")
+
+        print("\n[Test 8] Employee Authentication...")
         client = app.test_client()
         response = client.get('/', follow_redirects=False)
         assert response.status_code == 302 and response.headers['Location'].endswith('/login'), "Anonymous users should be sent to login"
@@ -89,7 +108,7 @@ def run_tests():
         assert b'Operations overview' in response.data and b'RECOMMENDED NEXT ACTION' in response.data, "Workspace shell should render"
         print("✅ Employee login and protected workspace work")
 
-        print("\n[Test 8] Employee Registration...")
+        print("\n[Test 9] Employee Registration...")
         original_employee_file = app_module.EMPLOYEES_FILE
         with tempfile.TemporaryDirectory() as temporary_directory:
             app_module.EMPLOYEES_FILE = os.path.join(temporary_directory, 'employees.json')
@@ -103,7 +122,7 @@ def run_tests():
         app_module.EMPLOYEES_FILE = original_employee_file
         print("✅ New employee registration and login work")
 
-        print("\n[Test 9] Multipart Text Upload...")
+        print("\n[Test 10] Multipart Text Upload...")
         response = client.post('/analyze', data={'text_data': test_csv}, content_type='multipart/form-data')
         assert response.status_code == 200, f"Expected 200, got {response.status_code}"
         assert response.get_json()['report'], "Multipart report should not be empty"
