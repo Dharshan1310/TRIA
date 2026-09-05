@@ -30,7 +30,7 @@ DEBUG_SUMMARY.md       - Improvements made
 
 KEY FEATURES:
 =============
-• CSV upload or text paste interface
+• CSV, PDF, or plain-text upload and paste interface
 • 4 risk detection rules
 • Professional HTML report generation
 • Real-time analysis
@@ -38,11 +38,13 @@ KEY FEATURES:
 • Comprehensive error handling
 • Security-first approach (HTML escaping, env vars)
 
-CSV FORMAT REQUIRED:
+SUPPORTED INPUT FORMAT:
 ====================
 date,description,payee,amount,channel
 2024-01-15,Transfer,John Smith,500.00,online
 2024-01-16,Payment,Utility Co,125.50,online
+
+CSV, plain text, tab-separated, pipe-separated, and text-based PDF files are accepted.
 
 RISK RULES:
 ===========
@@ -62,7 +64,8 @@ REPORT OUTPUT:
    OR
 ⚠️  Activity requires attention – see details below
    • Flagged transactions with dates/amounts
-   • Which rules were triggered
+   • Total risk percentage and key transaction counts
+   • Which rules were broken
    • How activity differs from normal behavior
    • Investigation recommendations
 

@@ -1,7 +1,7 @@
 """
 Quick functional tests for the transaction analysis system.
 """
-from app import parse_csv, TransactionAnalyzer, generate_report
+from app import parse_csv, parse_text, TransactionAnalyzer, calculate_risk_percentage, generate_report, app
 
 # Test CSV data
 test_csv = """date,description,payee,amount,channel
@@ -44,6 +44,8 @@ def run_tests():
         assert len(report) > 0, "Report should not be empty"
         assert "Activity requires attention" in report or "No issues found" in report, "Report format incorrect"
         print(f"✅ Report generated: {len(report)} characters")
+        assert "Total risk" in report, "Report should show the total risk score"
+        assert "Rules broken" in report, "Report should show the broken rules"
         
         # Test 4: Issue Details
         print("\n[Test 4] Issue Details...")
@@ -62,6 +64,22 @@ def run_tests():
             print("❌ Should have raised ValueError for invalid CSV")
         except ValueError:
             print("✅ Correctly raises ValueError for invalid CSV")
+
+        print("\n[Test 6] Alternate Input Formats...")
+        text_transactions = parse_text("date\tdescription\tpayee\tamount\tchannel\n2024-01-15T03:30:00\tPayment\tNight Shop\t20\tonline")
+        assert text_transactions[0]['hour'] == 3, "Timestamp hour should be preserved"
+        pdf_style_transactions = parse_text("date  description  payee  amount  channel\n2024-01-15  Payment  Night Shop  20  online")
+        assert len(pdf_style_transactions) == 1, "Fixed-width text should be parsed"
+        assert calculate_risk_percentage([{'severity': 'high'}, {'severity': 'medium'}]) == 55
+        assert calculate_risk_percentage([{'severity': 'high'}] * 4) == 100
+        print("✅ Text parsing and risk score checks passed")
+
+        print("\n[Test 7] Multipart Text Upload...")
+        client = app.test_client()
+        response = client.post('/analyze', data={'text_data': test_csv}, content_type='multipart/form-data')
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}"
+        assert response.get_json()['report'], "Multipart report should not be empty"
+        print("✅ Multipart upload works")
         
         print("\n" + "=" * 60)
         print("✅ ALL TESTS PASSED!")
