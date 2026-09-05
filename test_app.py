@@ -3,8 +3,10 @@ Quick functional tests for the transaction analysis system.
 """
 import os
 import tempfile
+import io
 import app as app_module
 from app import parse_csv, parse_text, TransactionAnalyzer, calculate_risk_percentage, generate_report, app
+from pypdf import PdfReader
 
 # Test CSV data
 test_csv = """date,description,payee,amount,channel
@@ -85,8 +87,9 @@ def run_tests():
         assert text_transactions[0]['hour'] == 3, "Timestamp hour should be preserved"
         pdf_style_transactions = parse_text("date  description  payee  amount  channel\n2024-01-15  Payment  Night Shop  20  online")
         assert len(pdf_style_transactions) == 1, "Fixed-width text should be parsed"
-        assert calculate_risk_percentage([{'severity': 'high'}, {'severity': 'medium'}]) == 55
-        assert calculate_risk_percentage([{'severity': 'high'}] * 4) == 100
+        assert calculate_risk_percentage([{'severity': 'high'}, {'severity': 'medium'}]) == 95
+        assert calculate_risk_percentage([{'severity': 'high'}]) == 70
+        assert calculate_risk_percentage([{'severity': 'high'}] * 2) == 100
         print("✅ Text parsing and risk score checks passed")
 
         print("\n[Test 7] Routine File Precision...")
@@ -127,6 +130,13 @@ def run_tests():
         assert response.status_code == 200, f"Expected 200, got {response.status_code}"
         assert response.get_json()['report'], "Multipart report should not be empty"
         print("✅ Multipart upload works")
+
+        print("\n[Test 11] PDF Export...")
+        response = client.post('/export-pdf', data={'text_data': test_csv, 'rules': '{}'}, content_type='multipart/form-data')
+        assert response.status_code == 200 and response.mimetype == 'application/pdf', "PDF export should return a PDF"
+        assert response.data.startswith(b'%PDF-1.4') and response.data.endswith(b'%%EOF\n'), "PDF response should have a complete PDF signature"
+        assert len(PdfReader(io.BytesIO(response.data)).pages) >= 1, "Exported PDF should contain a readable page"
+        print("✅ PDF export is readable")
         
         print("\n" + "=" * 60)
         print("✅ ALL TESTS PASSED!")

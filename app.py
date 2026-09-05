@@ -11,6 +11,7 @@ from collections import Counter
 import io
 import os
 import re
+import textwrap
 from html import escape
 from pypdf import PdfReader
 from dotenv import load_dotenv
@@ -55,39 +56,57 @@ LOGIN_TEMPLATE = """
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>TRIA | Employee access</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TRIA | Secure workspace</title>
     <style>
-        :root { color-scheme: dark; font-family: Georgia, 'Times New Roman', serif; background: #111916; color: #edf4ef; }
+        :root { color-scheme: dark; font-family: Arial, sans-serif; background: #071522; color: #edf7ff; }
         * { box-sizing: border-box; }
-        body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(circle at 15% 15%, #20453c, transparent 36%), linear-gradient(135deg, #111916, #1c2c29); }
-        main { width: min(440px, 100%); padding: 42px; border: 1px solid #48695e; background: rgba(20, 33, 29, .92); box-shadow: 0 24px 70px rgba(0,0,0,.3); }
-        .mark { color: #b9d66f; font: 700 12px Arial, sans-serif; letter-spacing: .2em; }
-        h1 { font-size: 40px; line-height: 1; margin: 28px 0 10px; }
-        p { color: #b8c8c0; font: 14px Arial, sans-serif; line-height: 1.6; }
-        label { display: block; margin: 24px 0 8px; color: #dce9df; font: 700 12px Arial, sans-serif; text-transform: uppercase; letter-spacing: .08em; }
-        input { width: 100%; padding: 14px; color: #f4fbf5; background: #0d1513; border: 1px solid #527267; font: 15px Arial, sans-serif; }
-        input:focus { outline: 2px solid #b9d66f; outline-offset: 2px; }
-        button { width: 100%; margin-top: 28px; padding: 15px; border: 0; background: #b9d66f; color: #142019; font: 700 13px Arial, sans-serif; letter-spacing: .08em; text-transform: uppercase; cursor: pointer; transition: transform .2s, background .2s; }
-        button:hover { transform: translateY(-2px); background: #d5ed8e; }
-        .error { margin-top: 18px; padding: 12px; border-left: 3px solid #f0a078; background: #3b2521; color: #ffc4a9; font: 13px Arial, sans-serif; }
-        .success { margin-top: 18px; padding: 12px; border-left: 3px solid #b9d66f; background: #263d2c; color: #d5ed8e; font: 13px Arial, sans-serif; }
-        .hint { margin-top: 24px; font-size: 12px; color: #829a8f; }
+        body { margin: 0; min-height: 100vh; background: #071522; }
+        .login-layout { min-height: 100vh; display: grid; grid-template-columns: minmax(360px, .9fr) minmax(460px, 1.1fr); }
+        .brand-panel { position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: space-between; padding: 46px 8%; background: linear-gradient(150deg, #0b2b49, #0b6372); }
+        .brand-panel::after { content: ''; position: absolute; width: 420px; height: 420px; right: -170px; bottom: -160px; border: 1px solid rgba(156, 235, 232, .3); border-radius: 50%; box-shadow: 0 0 0 35px rgba(156, 235, 232, .08), 0 0 0 72px rgba(156, 235, 232, .05); }
+        .brand { position: relative; z-index: 1; font: 800 30px Georgia, serif; letter-spacing: .12em; }
+        .brand small { display: block; margin-top: 9px; color: #9cebe8; font: 700 10px Arial, sans-serif; letter-spacing: .2em; }
+        .brand-copy { position: relative; z-index: 1; max-width: 420px; }
+        .brand-copy h1 { margin: 0 0 18px; font: 700 clamp(38px, 5vw, 68px)/.98 Georgia, serif; letter-spacing: -.04em; }
+        .brand-copy p { max-width: 360px; margin: 0; color: #c8e7eb; font-size: 15px; line-height: 1.7; }
+        .signal { position: relative; z-index: 1; display: flex; gap: 10px; align-items: center; color: #c8e7eb; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
+        .signal i { width: 8px; height: 8px; border-radius: 50%; background: #9cebe8; box-shadow: 0 0 0 5px rgba(156, 235, 232, .15); }
+        .form-panel { display: grid; place-items: center; padding: 48px 9%; background: #f5f8fb; color: #12263b; }
+        .form-card { width: min(390px, 100%); animation: rise .55s ease both; }
+        .form-kicker { color: #087f8c; font-size: 11px; font-weight: 800; letter-spacing: .15em; text-transform: uppercase; }
+        .form-card h2 { margin: 12px 0 9px; font: 700 38px Georgia, serif; letter-spacing: -.03em; }
+        .form-card > p { margin: 0 0 34px; color: #637589; line-height: 1.6; font-size: 14px; }
+        label { display: block; margin: 20px 0 8px; color: #334b62; font-size: 11px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+        .field { position: relative; }
+        input { width: 100%; padding: 15px 14px; border: 1px solid #cbd9e5; border-radius: 3px; background: white; color: #12263b; font-size: 15px; transition: border .2s, box-shadow .2s; }
+        input:focus { outline: 0; border-color: #087f8c; box-shadow: 0 0 0 3px rgba(8, 127, 140, .13); }
+        .password-toggle { position: absolute; right: 10px; top: 9px; width: auto; margin: 0; padding: 8px; background: transparent; color: #587086; font-size: 11px; letter-spacing: 0; text-transform: none; }
+        .password-toggle:hover { color: #087f8c; background: transparent; transform: none; }
+        .submit { width: 100%; margin-top: 28px; padding: 16px; border: 0; border-radius: 3px; background: #123c68; color: white; font-size: 12px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; cursor: pointer; transition: transform .2s, background .2s, box-shadow .2s; }
+        .submit:hover { transform: translateY(-2px); background: #087f8c; box-shadow: 0 10px 20px rgba(8, 127, 140, .18); }
+        .error { margin-top: 18px; padding: 12px; border-left: 3px solid #c95f52; background: #fff0ed; color: #923d35; font-size: 13px; line-height: 1.4; }
+        .success { margin-top: 18px; padding: 12px; border-left: 3px solid #087f8c; background: #e4f5f5; color: #075d68; font-size: 13px; line-height: 1.4; }
+        .footer-links { display: flex; justify-content: space-between; gap: 18px; margin-top: 25px; color: #718396; font-size: 12px; }
+        a { color: #087f8c; font-weight: 700; text-decoration: none; } a:hover { text-decoration: underline; }
+        @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+        @media (max-width: 760px) { .login-layout { display: block; } .brand-panel { min-height: 310px; padding: 30px 8%; } .brand-copy { margin-top: 55px; } .brand-copy h1 { font-size: 42px; } .signal { display: none; } .form-panel { min-height: calc(100vh - 310px); padding: 42px 8%; } }
     </style>
 </head>
-<body><main>
-    <div class="mark">TRIA / OPERATIONS</div>
-    <h1>Welcome back.</h1>
-    <p>Sign in to review transaction activity and move the next investigation forward.</p>
+<body><div class="login-layout">
+  <section class="brand-panel"><div class="brand">TRIA<small>TRANSACTION INTELLIGENCE</small></div><div class="brand-copy"><h1>See the signal.</h1><p>A focused workspace for reviewing transaction activity, understanding risk, and deciding what comes next.</p></div><div class="signal"><i></i> Secure employee workspace</div></section>
+  <main class="form-panel"><div class="form-card">
+    <div class="form-kicker">Employee access</div><h2>Welcome back.</h2><p>Sign in to continue to your operations workspace.</p>
     <form method="post">
         <label for="username">Employee ID</label><input id="username" name="username" autocomplete="username" required autofocus>
-        <label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required>
-        <button type="submit">Enter workspace</button>
+        <label for="password">Password</label><div class="field"><input id="password" name="password" type="password" autocomplete="current-password" required><button class="password-toggle" type="button" onclick="togglePassword()">Show</button></div>
+        <button class="submit" type="submit">Enter workspace <span aria-hidden="true">→</span></button>
     </form>
     {% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}
     {% if created %}<div class="success" role="status">Account created. You can sign in now.</div>{% endif %}
-    <p class="hint"><a href="{{ url_for('register') }}">Create a new employee account</a></p>
-    <p class="hint">Protected employee workspace · Authorized access only</p>
-</main></body>
+    <div class="footer-links"><span>Authorized access only</span><a href="{{ url_for('register') }}">Create an account</a></div>
+  </div></main>
+</div><script>function togglePassword() { const field = document.getElementById('password'); const button = document.querySelector('.password-toggle'); field.type = field.type === 'password' ? 'text' : 'password'; button.textContent = field.type === 'password' ? 'Show' : 'Hide'; }</script></body>
 </html>
 """
 
@@ -150,6 +169,7 @@ HTML_TEMPLATE = """
         .rule-grid input, .filter-bar input, .filter-bar select { width: 100%; padding: 9px; border: 1px solid #d1d5db; border-radius: 6px; }
         .rule-help, .history { font-size: 12px; color: #64748b; margin-top: 9px; }
         .report-tools { display: flex; justify-content: space-between; gap: 12px; align-items: end; margin: 0 0 20px; }
+        .filter-status { min-height: 18px; margin: -10px 0 15px; color: var(--teal); font-size: 12px; font-weight: 700; }
         .filter-bar { flex: 1; }
         .history-item { padding: 8px 0; border-bottom: 1px solid #e5e7eb; }
         @media (max-width: 650px) { .baseline-panel, .rule-grid, .filter-bar { grid-template-columns: 1fr; } .report-tools { align-items: stretch; flex-direction: column; } }
@@ -177,20 +197,20 @@ HTML_TEMPLATE = """
         .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid #e5e7eb; border-top-color: #3b82f6; border-radius: 50%; animation: spin 0.8s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
         @media (max-width: 650px) { .report-heading { align-items: stretch; flex-direction: column; } .risk-score { min-width: 0; } .key-info { grid-template-columns: repeat(2, 1fr); } .card { padding: 20px; } }
-        :root { --ink: #17231f; --muted: #687872; --paper: #f5f7f2; --panel: #ffffff; --line: #dce4dc; --green: #286b59; --lime: #b8d96a; --coral: #e67d5f; }
+        :root { --ink: #13263d; --muted: #637589; --paper: #f3f7fb; --panel: #ffffff; --line: #d8e3ed; --teal: #087f8c; --blue: #123c68; --accent: #53b8c3; --coral: #d96e5f; }
         body { font-family: Arial, sans-serif; background: var(--paper); color: var(--ink); transition: background .25s, color .25s; }
         .app-shell { display: flex; min-height: 100vh; }
-        .sidebar { width: 248px; flex: 0 0 248px; padding: 28px 18px; background: #18352e; color: #dcebe2; display: flex; flex-direction: column; }
-        .brand { padding: 0 14px 30px; border-bottom: 1px solid #3d6155; }
-        .brand strong { display: block; font: 800 28px Georgia, serif; letter-spacing: .08em; color: #f2f7eb; }
-        .brand span { display: block; margin-top: 7px; font-size: 10px; letter-spacing: .18em; color: var(--lime); }
-        .menu-label { margin: 28px 14px 10px; font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: #91afa2; }
-        .nav-btn { width: 100%; padding: 12px 14px; border: 0; border-left: 3px solid transparent; text-align: left; color: #bdd0c6; background: transparent; font-weight: 700; cursor: pointer; transition: background .2s, color .2s, border .2s; }
-        .nav-btn:hover, .nav-btn.active { background: #285247; border-left-color: var(--lime); color: white; }
-        .sidebar-footer { margin-top: auto; padding: 16px 14px 0; border-top: 1px solid #3d6155; font-size: 12px; color: #9ab4a8; }
-        .sidebar-footer strong { display: block; color: #edf5e9; margin-bottom: 12px; }
+        .sidebar { width: 248px; flex: 0 0 248px; padding: 28px 18px; background: #102d4b; color: #dceaf4; display: flex; flex-direction: column; }
+        .brand { padding: 0 14px 30px; border-bottom: 1px solid #365574; }
+        .brand strong { display: block; font: 800 28px Georgia, serif; letter-spacing: .08em; color: #f3f8fc; }
+        .brand span { display: block; margin-top: 7px; font-size: 10px; letter-spacing: .18em; color: var(--accent); }
+        .menu-label { margin: 28px 14px 10px; font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: #91b0c9; }
+        .nav-btn { width: 100%; padding: 12px 14px; border: 0; border-left: 3px solid transparent; text-align: left; color: #bdd0df; background: transparent; font-weight: 700; cursor: pointer; transition: background .2s, color .2s, border .2s; }
+        .nav-btn:hover, .nav-btn.active { background: #1d496e; border-left-color: var(--accent); color: white; }
+        .sidebar-footer { margin-top: auto; padding: 16px 14px 0; border-top: 1px solid #365574; font-size: 12px; color: #9bb4c8; }
+        .sidebar-footer strong { display: block; color: #edf5fb; margin-bottom: 12px; }
         .sidebar-footer form { margin: 0; }
-        .logout { padding: 0; color: #b9d66f; background: none; font-size: 12px; }
+        .logout { padding: 0; color: var(--accent); background: none; font-size: 12px; }
         .container { width: min(1180px, 100%); max-width: none; margin: 0; padding: 0 44px 60px; }
         header { display: flex; justify-content: space-between; align-items: end; padding: 42px 0 26px; margin-bottom: 30px; border-bottom: 1px solid var(--line); }
         header h1 { color: var(--ink); font: 800 38px Georgia, serif; letter-spacing: -.02em; }
@@ -200,23 +220,23 @@ HTML_TEMPLATE = """
         .icon-btn:hover { background: #e7efe3; }
         .hero-strip { display: grid; grid-template-columns: 1fr 1.25fr; gap: 16px; margin-bottom: 18px; }
         .welcome-panel, .next-panel { padding: 25px; border: 1px solid var(--line); background: var(--panel); box-shadow: 0 12px 28px rgba(31, 67, 53, .07); }
-        .welcome-panel { background: #dcebd6; }
+        .welcome-panel { background: #dcecf2; }
         .welcome-panel h2, .next-panel h2 { margin: 7px 0 8px; font: 700 25px Georgia, serif; }
         .welcome-panel p, .next-panel p { margin: 0; line-height: 1.5; }
         .next-panel { display: flex; align-items: center; gap: 18px; }
         .next-number { display: grid; place-items: center; flex: 0 0 48px; height: 48px; border-radius: 50%; background: var(--coral); color: white; font: 800 21px Georgia, serif; }
-        .next-panel .eyebrow { color: var(--green); }
+        .next-panel .eyebrow { color: var(--teal); }
         .card { border: 1px solid var(--line); border-radius: 2px; background: var(--panel); box-shadow: 0 12px 28px rgba(31, 67, 53, .07); }
-        .btn-primary { background: var(--green); }
-        .btn-primary:hover { background: #1e5546; }
-        .btn-secondary { background: #edf2eb; color: var(--ink); }
+        .btn-primary { background: var(--blue); }
+        .btn-primary:hover { background: #0c2b4c; }
+        .btn-secondary { background: #e8f0f6; color: var(--ink); }
         textarea, input[type=file], .rule-grid input, .filter-bar input, .filter-bar select { background: var(--panel); color: var(--ink); border-color: var(--line); }
-        .eyebrow { color: var(--green); }
+        .eyebrow { color: var(--teal); }
         .mobile-menu { display: none; }
         @media (max-width: 820px) { .sidebar { width: 210px; flex-basis: 210px; } .container { padding: 0 24px 40px; } .hero-strip { grid-template-columns: 1fr; } }
         @media (max-width: 650px) { .app-shell { display: block; } .sidebar { display: none; position: fixed; z-index: 5; inset: 0 auto 0 0; width: 250px; } .sidebar.open { display: flex; } .mobile-menu { display: inline-block; } .container { padding: 0 16px 36px; } header { align-items: start; padding: 24px 0 20px; } header h1 { font-size: 30px; } .top-actions { flex-shrink: 0; } }
-        body.dark { --ink: #e9f2e9; --muted: #a2b5aa; --paper: #101916; --panel: #192620; --line: #34483f; --green: #78b79f; --lime: #c8e47a; }
-        body.dark .sidebar { background: #0a1210; } body.dark .welcome-panel { background: #203a31; } body.dark .btn-secondary, body.dark .icon-btn { background: #22332d; color: var(--ink); }
+        body.dark { --ink: #e9f2fa; --muted: #a5b7c8; --paper: #101a25; --panel: #192a3b; --line: #344b60; --teal: #70d1d4; --blue: #72aee0; --accent: #8edce0; }
+        body.dark .sidebar { background: #091c31; } body.dark .welcome-panel { background: #203c54; } body.dark .btn-secondary, body.dark .icon-btn { background: #22384b; color: var(--ink); }
     </style>
 </head>
 <body>
@@ -240,11 +260,6 @@ HTML_TEMPLATE = """
             <section class="welcome-panel"><span class="eyebrow">TODAY'S DESK</span><h2>Clarity before action.</h2><p>Use the review engine to turn raw transaction activity into a defensible next step.</p></section>
             <section class="next-panel"><div class="next-number">1</div><div><span class="eyebrow">RECOMMENDED NEXT ACTION</span><h2>Start a new investigation</h2><p>Upload a transaction file or paste activity to establish a customer baseline.</p></div></section>
         </div>
-        <header>
-            <h1>Risk Detector</h1>
-            <p>Analyze transactions for unusual patterns</p>
-        </header>
-
         <div id="input-section" class="card">
             <div>
                 <label for="csv-file">Upload a CSV, PDF, or text file</label>
@@ -292,9 +307,10 @@ HTML_TEMPLATE = """
                         <input id="filter-amount" type="number" min="0" placeholder="Minimum amount" oninput="filterReport()" aria-label="Filter by amount">
                         <select id="filter-rule" onchange="filterReport()"><option value="">All risk rules</option></select>
                     </div>
-                    <button class="btn-secondary" onclick="rerunWithRules()">Rerun with new rules</button>
+                    <button class="btn-primary" onclick="filterReport(true)">Apply filter</button>
                     <button class="btn-secondary" onclick="exportReport()">Export PDF</button>
                 </div>
+                <div id="filter-status" class="filter-status" role="status"></div>
                 <div id="report-content"></div>
                 <div class="history" id="history-anchor"><strong>Investigation history</strong><div id="history-list"></div></div>
             </div>
@@ -303,6 +319,7 @@ HTML_TEMPLATE = """
 
     <script>
         let currentCsvData = '';
+        let currentTransactions = [];
         let currentRules = {};
         let investigations = [];
 
@@ -355,6 +372,7 @@ HTML_TEMPLATE = """
 
         function showReport(data) {
             currentRules = data.rules || readRules();
+            currentTransactions = data.transactions || [];
             if (!currentCsvData && data.transactions) {
                 currentCsvData = 'date,description,payee,amount,channel\\n' + data.transactions.map(txn => [txn.date, txn.description, txn.payee, txn.amount, txn.channel].map(value => `"${String(value).replace(/"/g, '""')}"`).join(',')).join('\\n');
             }
@@ -405,29 +423,40 @@ HTML_TEMPLATE = """
             });
         }
 
-        function filterReport() {
+        function filterReport(showMessage = false) {
             const date = document.getElementById('filter-date').value;
             const minimum = Number(document.getElementById('filter-amount').value || 0);
             const rule = document.getElementById('filter-rule').value;
+            let visibleCount = 0;
             document.querySelectorAll('#report-content .issue').forEach(issue => {
                 const matchesRule = !rule || issue.querySelector('h3').textContent === rule;
                 const rows = [...issue.querySelectorAll('tbody tr, tr')].slice(1);
-                const matchesTransaction = !date && !minimum || rows.some(row => {
+                const matchingRows = rows.filter(row => {
                     const cells = row.querySelectorAll('td');
-                    return cells.length && (!date || cells[0].textContent.startsWith(date)) && (!minimum || Number(cells[2].textContent.replace(/[^0-9.-]/g, '')) >= minimum);
+                    return cells.length && (!date || cells[0].textContent.trim().startsWith(date)) && (!minimum || Number(cells[2].textContent.replace(/[^0-9.-]/g, '')) >= minimum);
                 });
-                issue.style.display = matchesRule && matchesTransaction ? '' : 'none';
+                matchingRows.forEach(row => row.style.display = matchesRule ? '' : 'none');
+                rows.filter(row => !matchingRows.includes(row)).forEach(row => row.style.display = 'none');
+                const visible = matchesRule && matchingRows.length > 0;
+                issue.style.display = visible ? '' : 'none';
+                if (visible) visibleCount += matchingRows.length;
             });
+            if (showMessage) document.getElementById('filter-status').textContent = visibleCount ? `${visibleCount} matching transaction${visibleCount === 1 ? '' : 's'} shown.` : 'No transactions match these filters.';
         }
 
         function exportReport() {
             const form = new FormData();
-            form.append('text_data', currentCsvData);
+            const filteredCsv = getFilteredCsv();
+            form.append('text_data', filteredCsv || currentCsvData);
             form.append('rules', JSON.stringify(currentRules));
-            fetch('/export-pdf', {method: 'POST', body: form}).then(response => response.blob()).then(blob => {
+            fetch('/export-pdf', {method: 'POST', body: form}).then(response => {
+                if (!response.ok) throw new Error('PDF export failed');
+                return response.blob();
+            }).then(blob => {
                 const url = URL.createObjectURL(blob);
-                const link = document.createElement('a'); link.href = url; link.download = 'tria-risk-report.pdf'; link.click(); URL.revokeObjectURL(url);
-            });
+                const link = document.createElement('a'); link.href = url; link.download = 'tria-risk-report.pdf'; document.body.appendChild(link); link.click(); link.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+            }).catch(() => showError('The PDF could not be downloaded. Please try again.'));
         }
 
         function newInvestigation() {
@@ -436,9 +465,12 @@ HTML_TEMPLATE = """
             clearForm();
         }
 
-        function rerunWithRules() {
-            fetch('/rerun', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({csv_data: currentCsvData, rules: readRules()})})
-                .then(r => r.json()).then(data => data.error ? alert(data.error) : showReport(data));
+        function getFilteredCsv() {
+            const date = document.getElementById('filter-date').value;
+            const minimum = Number(document.getElementById('filter-amount').value || 0);
+            const selectedTransactions = currentTransactions.filter(txn => (!date || txn.date.startsWith(date)) && (!minimum || Number(txn.amount) >= minimum));
+            if (!selectedTransactions.length) return '';
+            return ['date,description,payee,amount,channel', ...selectedTransactions.map(txn => [txn.date, txn.description, txn.payee, txn.amount, txn.channel].map(value => `"${String(value).replace(/"/g, '""')}"`).join(','))].join(String.fromCharCode(10));
         }
 
         function renderHistory() {
@@ -451,6 +483,7 @@ HTML_TEMPLATE = """
         function clearForm() {
             document.getElementById('csv-text').value = '';
             document.getElementById('csv-file').value = '';
+            currentTransactions = [];
             document.getElementById('error-msg').classList.remove('show');
         }
 
@@ -689,8 +722,8 @@ def parse_pdf(pdf_file):
 
 
 def calculate_risk_percentage(issues):
-    """Return a transparent, capped score from the rules that were broken."""
-    severity_points = {'high': 35, 'medium': 20, 'low': 10}
+    """Return a severity-weighted, capped score from confirmed findings."""
+    severity_points = {'high': 70, 'medium': 25, 'low': 10}
     return min(100, sum(severity_points.get(issue.get('severity'), 0) for issue in issues))
 
 
@@ -894,19 +927,17 @@ def parse_request_transactions():
 
 
 def build_pdf(transactions, issues):
-    """Create a dependency-free, readable PDF summary for export."""
+    """Create a small, plain-text PDF summary that works in common viewers."""
     lines = ['TRIA TRANSACTION RISK REPORT', f'Generated: {datetime.now().isoformat(timespec="seconds")}',
-             f'Transactions reviewed: {len(transactions)}', f'Flagged transactions: {len({id(transaction) for issue in issues for transaction in issue["transactions"]})}',
-             f'Total risk: {calculate_risk_percentage(issues)}%', '']
-    for issue in issues:
-        lines.append(f'{issue["severity"].upper()}: {issue["rule"]}')
-        lines.append(issue['explanation'])
+             f'Transactions reviewed: {len(transactions)}', f'Total risk: {calculate_risk_percentage(issues)}%', '']
+    lines.extend([f'{issue["severity"].upper()}: {issue["rule"]}', issue['explanation']] for issue in issues)
     if not issues:
         lines.append('No rules were broken. Activity appears routine.')
-    lines = [line[:115] for line in lines]
-    stream = 'BT /F1 10 Tf 50 760 Td ' + ' '.join(f'({line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")}) Tj 0 -16 Td' for line in lines) + ' ET'
-    objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>', '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>', f'<< /Length {len(stream.encode("latin-1"))} >>\nstream\n{stream}\nendstream']
-    pdf = b'%PDF-1.4\n'
+    lines = [line for item in lines for line in (item if isinstance(item, list) else [item])]
+    lines = [line.encode('ascii', 'replace').decode('ascii')[:95] for line in lines[:42]]
+    content = 'BT /F1 10 Tf 50 750 Td ' + ' '.join(f'({line.replace(chr(92), chr(92) * 2).replace("(", chr(92) + "(").replace(")", chr(92) + ")")}) Tj 0 -16 Td' for line in lines) + ' ET'
+    objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>', f'<< /Length {len(content.encode("latin-1"))} >>\nstream\n{content}\nendstream', '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>']
+    pdf = b'%PDF-1.4\n%\xe2\xe3\xcf\xd3\n'
     offsets = [0]
     for index, obj in enumerate(objects, 1):
         offsets.append(len(pdf))
@@ -914,8 +945,10 @@ def build_pdf(transactions, issues):
     xref = len(pdf)
     pdf += f'xref\n0 {len(objects) + 1}\n0000000000 65535 f \n'.encode('latin-1')
     pdf += ''.join(f'{offset:010d} 00000 n \n' for offset in offsets[1:]).encode('latin-1')
-    pdf += f'trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF'.encode('latin-1')
-    return io.BytesIO(pdf)
+    pdf += f'trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n'.encode('latin-1')
+    stream = io.BytesIO(pdf)
+    stream.seek(0)
+    return stream
 
 
 @app.route('/rerun', methods=['POST'])
